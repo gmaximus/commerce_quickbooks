@@ -106,7 +106,7 @@ function commerce_quickbooks_sync_products_worker ($data) {
 
 /**
  * This is the QBO product queue worker definition. 
- * It passes the data along to a function defined in a separate file. That function sends the product to QBO.
+ * It passes the data along to a function defined in a separate file. That function sends the coupons to QBO.
  */
 function commerce_quickbooks_sync_coupons_worker ($data) {
   module_load_include('inc', 'commerce_quickbooks', 'inc/sync-coupons.cron');
@@ -190,7 +190,7 @@ function commerce_quickbooks_add_new_products_to_queue () {
 
 function commerce_quickbooks_add_new_coupons_to_queue() {
   
- // Get a list of sold products that aren't synced or pending
+ // Get a list of coupons that aren't synced or pending
   $coupon_ids = db_query("SELECT entity_id as id 
                           FROM {field_data_field_qbo_status} AS qbo_status 
                           WHERE entity_type = 'commerce_coupon' 
@@ -214,7 +214,7 @@ function commerce_quickbooks_add_new_coupons_to_queue() {
 
 function commerce_quickbooks_add_new_orders_to_queue () {
   
-  // Get a list of coupons that aren't synced or pending
+  // Get a list of coupons that are not synced or pending
   $coupons_not_synced = db_query("SELECT entity_id as id 
                           FROM {field_data_field_qbo_status} AS qbo_status 
                           WHERE entity_type = 'commerce_coupon' 

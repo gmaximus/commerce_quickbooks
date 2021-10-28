@@ -12,11 +12,11 @@
 function commerce_quickbooks_settings_form($form, &$form_state) {
 
    $form['commerce_quickbooks_commerce_cron'] = array(
-    '#type' => 'checkbox',
-    '#title' => t('Enable Drupal Commerce cron'),
-    '#default_value' => variable_get('commerce_quickbooks_commerce_cron'),
-    '#description' => t('Warning - This setting will send all your customers, products and orders to QuickBooks online during cron runs.'),
-   );
+        '#type' => 'checkbox',
+        '#title' => t('Enable Drupal Commerce cron'),
+        '#default_value' => variable_get('commerce_quickbooks_commerce_cron'),
+        '#description' => t('Warning - This setting will send all your customers, products and orders to QuickBooks online during cron runs.'),
+    );
    
    // Build an array of order status options grouped by order state.
     $options = array();
@@ -31,22 +31,13 @@ function commerce_quickbooks_settings_form($form, &$form_state) {
     }
     
     $form['commerce_quickbooks_order_status'] = array(
-    '#type' => 'select',
-    '#title' => t('Order status to send'),
-     '#multiple' => TRUE,
-    '#options' => $options,
-    '#default_value' => variable_get('commerce_quickbooks_order_status'),
-    '#description' => t('Select the order statuses that should be considered ready to send. You will want to select the final status. Not one that gets systematically updated. <br>This is because the queue gets built by querying the database for orders matching this status.'),
-  );
-   
-   
-   $form['commerce_quickbooks_comissions_cron'] = array(
-    '#type' => 'checkbox',
-    '#title' => t('Enable Comissions cron'),
-    '#default_value' => variable_get('commerce_quickbooks_comissions_cron'),
-    '#description' => t('Warning - This setting will send all your designers, affiliates and their comissions to QBO.'),
-   );
-   
+        '#type' => 'select',
+        '#title' => t('Order status to send'),
+        '#multiple' => TRUE,
+        '#options' => $options,
+        '#default_value' => variable_get('commerce_quickbooks_order_status'),
+        '#description' => t('Select the order statuses that should be considered ready to send. You will want to select the final status. Not one that gets systematically updated. <br>This is because the queue gets built by querying the database for orders matching this status.'),
+    );
 
   return(system_settings_form($form));
 
