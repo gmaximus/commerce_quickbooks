@@ -1,0 +1,8 @@
+name = Commerce Quickbooks
+description = This module extends qbo_api to provide integration with Drupal Commerce. It will send customers, products and orders.
+core = 7.x
+package = Commerce Quickbooks
+dependencies[] = qbo_api
+dependencies[] = commerce_order
+dependencies[] = commerce_customer
+dependencies[] = commerce_product

@@ -1,0 +1,482 @@
+<?php
+
+/**
+ * Implements hook_permission
+ * @return type
+ */
+
+function commerce_quickbooks_permission() {
+  return array(
+      'administer commerce quickbooks' => array(
+      'title' => t('administer commerce quickbooks'),
+      'description' => t('As above'),
+    ),
+ );
+}
+
+/**
+ * Implements hook_menu().
+ */
+function commerce_quickbooks_menu() { 
+    
+  $items = array();
+  
+  $items['admin/config/services/qbo/commerce_quickbooks'] = array(
+    'title' => 'Commerce Quickbooks',
+    'description' => t('Configure the settings for Commerce Quickbooks.'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('commerce_quickbooks_settings_form'),
+    'access arguments' => array('administer commerce quickbooks'),
+    'file' => 'commerce_quickbooks.settings.inc',
+  ); 
+  
+  $items['qbo/oauth/prod'] = array(
+    'title' => 'QuickBooks Online API OAuth Generator',
+    'page callback' => 'commerce_quickbooks_prod_oauth_page',
+    // Access will be checked in the page callback.
+    'access callback' => TRUE,
+    'file' => 'inc/commerce_quickbooks_prod_oauth.pages.inc',
+    'type' => MENU_CALLBACK,
+  );
+  
+  return $items;
+}
+
+/**
+ * Implements hook_cron().
+ * 
+ * Every time the cron.php is executed this code gets fired
+ * 
+ **/
+function commerce_quickbooks_cron(){
+    
+    // If enabled
+    if (variable_get('commerce_quickbooks_commerce_cron')) {
+        commerce_quickbooks_add_new_customers_to_queue();
+        commerce_quickbooks_add_new_products_to_queue();
+        // If commerce_coupon is installed
+        if (module_exists('commerce_coupon')) {
+            commerce_quickbooks_add_new_coupons_to_queue();
+        }
+        commerce_quickbooks_add_new_orders_to_queue();
+    }
+}
+
+/**
+ * Implements hook_cron_queue_info().
+ */
+function commerce_quickbooks_cron_queue_info(){
+  
+  $queues['commerce_quickbooks_sync_customers'] = array(
+    'worker callback' => 'commerce_quickbooks_sync_customers_worker',
+  );
+    
+  $queues['commerce_quickbooks_sync_products'] = array(
+    'worker callback' => 'commerce_quickbooks_sync_products_worker',
+  );
+  
+  $queues['commerce_quickbooks_sync_coupons'] = array(
+   'worker callback' => 'commerce_quickbooks_sync_coupons_worker',
+  );
+      
+  $queues['commerce_quickbooks_sync_sales_orders'] = array(
+    'worker callback' => 'commerce_quickbooks_sync_sales_orders_worker',
+  ); 
+  
+  return $queues;
+}
+
+/**
+ * This is the QBO customer queue worker definition. 
+ * It passes the data along to a function defined in a separate file. That function takes the UID and sends the customer to QBO.
+ */
+function commerce_quickbooks_sync_customers_worker ($data) {
+  module_load_include('inc', 'commerce_quickbooks', 'inc/sync-customer.cron');
+  commerce_quickbooks_sync_customer($data);
+}
+
+/**
+ * This is the QBO product queue worker definition. 
+ * It passes the data along to a function defined in a separate file. That function sends the product to QBO.
+ */
+function commerce_quickbooks_sync_products_worker ($data) {
+  module_load_include('inc', 'commerce_quickbooks', 'inc/sync-product.cron');
+  commerce_quickbooks_sync_product($data);
+}
+
+/**
+ * This is the QBO product queue worker definition. 
+ * It passes the data along to a function defined in a separate file. That function sends the product to QBO.
+ */
+function commerce_quickbooks_sync_coupons_worker ($data) {
+  module_load_include('inc', 'commerce_quickbooks', 'inc/sync-coupons.cron');
+  commerce_quickbooks_sync_coupon($data);
+}
+
+/**
+ * This is the QBO order queue worker definition. 
+ * It passes the data along to a function defined in a separate file. That function sends the order to QBO.
+ */
+function commerce_quickbooks_sync_sales_orders_worker ($data) {
+  module_load_include('inc', 'commerce_quickbooks', 'inc/sync-order.cron');
+  commerce_quickbooks_sync_order($data);
+}
+
+/**
+ * Add new first time commerce customers to queue
+ */
+
+function commerce_quickbooks_add_new_customers_to_queue () {
+  
+  // Get a list of new customers UID's and that aren't synced or pending
+    $valid_statuses = commerce_quickbooks_get_statuses();
+    $customers = db_query("SELECT distinct(uid) 
+                          FROM {commerce_order}
+                          LEFT JOIN {field_data_field_qbo_status} as qbo_status ON qbo_status.entity_id = commerce_order.uid
+                          WHERE commerce_order.status in (:statuses)
+                          AND qbo_status.entity_type = 'user'
+                          AND qbo_status.field_qbo_status_value in ('','not_synced')", array(':statuses' => $valid_statuses));  
+    if ($customers) {
+    // Build the customers queue
+      $customers_queue = DrupalQueue::get('commerce_quickbooks_sync_customers');
+      foreach ($customers as $customer) {
+         // Load customer account
+          $uid = $customer->uid;
+          $user = user_load($uid);
+          $user_update = array();
+          $user_update['field_qbo_status'][LANGUAGE_NONE][0]['value'] = 'pending';
+          user_save($user, $user_update);
+          $customers_queue->createItem($customer);
+      }
+    }
+ 
+}
+
+/**
+ * Add newly sold commerce products to queue
+ */
+
+function commerce_quickbooks_add_new_products_to_queue () {
+  
+ // Get a list of sold products that aren't synced or pending
+  $valid_statuses = commerce_quickbooks_get_statuses();
+  $products = db_query("SELECT distinct(product.product_id) 
+                        FROM commerce_order
+                        LEFT JOIN commerce_line_item as line ON commerce_order.order_id = line.order_id
+                        LEFT JOIN commerce_product as product ON line.line_item_label = product.sku
+                        LEFT JOIN field_data_field_qbo_status as qbo_status ON qbo_status.entity_id = product.product_id
+                        WHERE commerce_order.status in (:statuses)
+                        AND line.type = 'product'
+                        AND qbo_status.field_qbo_status_value in ('','not_synced')
+                        AND qbo_status.entity_type = 'commerce_product'", array(':statuses' => $valid_statuses));  
+  if ($products) {
+    // Build the products queue
+      $products_queue = DrupalQueue::get('commerce_quickbooks_sync_products');
+      foreach ($products as $product) {
+          $product_id = $product->product_id;
+          $product = entity_load_single('commerce_product', $product_id);
+          $entity = entity_metadata_wrapper('commerce_product', $product);
+          $entity->field_qbo_status = 'pending';
+          $entity->save();
+          $products_queue->createItem($product);
+      }
+  }
+}
+
+
+/**
+ * Add new commerce coupons to queue
+ */
+
+function commerce_quickbooks_add_new_coupons_to_queue() {
+  
+ // Get a list of sold products that aren't synced or pending
+  $coupon_ids = db_query("SELECT entity_id as id 
+                          FROM {field_data_field_qbo_status} AS qbo_status 
+                          WHERE entity_type = 'commerce_coupon' 
+                          AND field_qbo_status_value in ('','not_synced')");  
+  if ($coupon_ids) {
+    // Build the coupons queue
+      $coupons_queue = DrupalQueue::get('commerce_quickbooks_sync_coupons');
+      foreach ($coupon_ids as $coupon_id) {
+        $coupon = entity_load_single('commerce_coupon', $coupon_id->id);
+        $entity = entity_metadata_wrapper('commerce_coupon', $coupon);
+        $entity->field_qbo_status = 'pending';
+        $entity->save();
+        $coupons_queue->createItem($coupon);
+      }
+  }
+}
+
+/**
+ * Add new commerce orders to queue that match the selected order statuses and everything else is synched
+ */
+
+function commerce_quickbooks_add_new_orders_to_queue () {
+  
+  // Get a list of coupons that aren't synced or pending
+  $coupons_not_synced = db_query("SELECT entity_id as id 
+                          FROM {field_data_field_qbo_status} AS qbo_status 
+                          WHERE entity_type = 'commerce_coupon' 
+                          AND field_qbo_status_value in ('', 'not_synced','pending')")->fetchField(); 
+  if (empty($coupons_not_synced)) {
+  // Get a list of commerce orders that are ready but aren't synced or pending. While the customer has a synced status.
+  $valid_statuses = commerce_quickbooks_get_statuses();
+  $orders = db_query("SELECT order_id 
+                      FROM {commerce_order}
+                      LEFT JOIN {field_data_field_qbo_status} AS order_qbo_status ON order_qbo_status.entity_id = commerce_order.order_id
+                      LEFT JOIN {field_data_field_qbo_status} AS user_qbo_status ON user_qbo_status.entity_id = commerce_order.uid
+                      WHERE commerce_order.status in (:statuses)
+                      AND order_qbo_status.field_qbo_status_value in ('','not_synced')
+                      AND user_qbo_status.field_qbo_status_value = 'synced'
+                      AND user_qbo_status.entity_type = 'user'
+                      AND order_qbo_status.entity_type = 'commerce_order'", array(':statuses' => $valid_statuses));  
+  if ($orders) {
+  // Build the orders queue
+    $orders_queue = DrupalQueue::get('commerce_quickbooks_sync_sales_orders');
+    foreach ($orders as $order) {
+      // Check if the order has any products that are not synced.
+        $order_id = $order->order_id;
+        $products_not_syned = db_query("SELECT line_item_id 
+                              FROM {commerce_line_item} AS line
+                              LEFT JOIN {commerce_product} AS product ON line.line_item_label = product.sku
+                              LEFT JOIN {field_data_field_qbo_status} AS product_qbo_status ON product.product_id = product_qbo_status.entity_id
+                              WHERE line.order_id = :order_id 
+                              AND line.type = 'product'
+                              AND product_qbo_status.field_qbo_status_value != 'synced'
+                              AND product_qbo_status.entity_type = 'commerce_product'", array(':order_id' => $order_id))->fetchField();
+      if (!$products_not_syned) {
+        // Update commerce orders QBO status to avoid duplicates.
+          $commerce_order = entity_load_single('commerce_order', $order_id);
+          $entity = entity_metadata_wrapper('commerce_order', $commerce_order);
+          $entity->field_qbo_status = 'pending';
+          $entity->save();
+        // Add order to queue  
+          $orders_queue->createItem($order);
+      }
+    }
+  } 
+ }
+}
+
+
+/***************************************************************
+ * Field Type API hooks
+ ***************************************************************/
+
+/**
+ * Implements hook_field_info().
+ *
+ * Provides the description of the field.
+ */
+function commerce_quickbooks_field_info() {
+  return array(
+    // We name our field as the associative name of the array.
+    'commerce_quickbooks_product_income_account' => array(
+      'label' => t('QBO Income Account'),
+      'description' => t('Please select the income account'),
+      'default_widget' => 'commerce_quickbooks_account_select',
+      'default_formatter' => 'commerce_quickbooks_simple_text',
+    ),
+  );
+}
+
+/**
+ * Implements hook_field_validate().
+ *
+ * This hook gives us a chance to validate content that's in our
+ * field. We're really only interested in the $items parameter, since
+ * it holds arrays representing content in the field we've defined.
+ * We want to verify that the items only contain RGB hex values like
+ * this: #RRGGBB. If the item validates, we do nothing. If it doesn't
+ * validate, we add our own error notification to the $errors parameter.
+ *
+ * @see commerce_quickbooks_field_widget_error()
+ */
+function commerce_quickbooks_field_validate($entity_type, $entity, $field, $instance, $langcode, $items, &$errors) {
+
+}
+
+
+/**
+ * Implements hook_field_is_empty().
+ *
+ * hook_field_is_empty() is where Drupal asks us if this field is empty.
+ * Return TRUE if it does not contain data, FALSE if it does. This lets
+ * the form API flag an error when required fields are empty.
+ */
+function commerce_quickbooks_field_is_empty($item, $field) {
+  return empty($item['product_income_account']);
+}
+
+/**
+ * Implements hook_field_formatter_info().
+ *
+ * We need to tell Drupal that we have two different types of formatters
+ * for this field. One will change the text color, and the other will
+ * change the background color.
+ *
+ * @see commerce_quickbooks_field_formatter_view()
+ */
+function commerce_quickbooks_field_formatter_info() {
+  return array(
+    // This formatter just displays the hex value in the color indicated.
+    'commerce_quickbooks_simple_text' => array(
+      'label' => t('Simple text-based formatter'),
+      'field types' => array('commerce_quickbooks_product_income_account'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_field_formatter_view().
+ *
+ * Two formatters are implemented.
+ * - commerce_quickbooks_simple_text just outputs markup indicating the color that
+ *   was entered and uses an inline style to set the text color to that value.
+ * - commerce_quickbooks_color_background does the same but also changes the
+ *   background color of div.region-content.
+ *
+ * @see commerce_quickbooks_field_formatter_info()
+ */
+function commerce_quickbooks_field_formatter_view($entity_type, $entity, $field, $instance, $langcode, $items, $display) {
+  $element = array();
+
+  switch ($display['type']) {
+    // This formatter simply outputs the field as text and with a color.
+    case 'commerce_quickbooks_simple_text':
+      foreach ($items as $delta => $item) {
+        $element[$delta] = array(
+          // We create a render array to produce the desired markup,
+          // "<p style="color: #hexcolor">The color code ... #hexcolor</p>".
+          // See theme_html_tag().
+          '#type' => 'html_tag',
+          '#tag' => 'p',
+          '#value' => t('The income account is @code', array('@code' => $item['product_income_account'])),
+        );
+      }
+      break;
+
+  }
+
+  return $element;
+}
+
+/**
+ * Implements hook_field_widget_info().
+ *
+ * Three widgets are provided.
+ * - A simple text-only widget where the user enters the '#ffffff'.
+ *
+ * These widget types will eventually show up in hook_field_widget_form,
+ * where we will have to flesh them out.
+ *
+ * @see commerce_quickbooks_field_widget_form()
+ */
+function commerce_quickbooks_field_widget_info() {
+  return array(
+    'commerce_quickbooks_account_select' => array(
+      'label' => t('QBO income account'),
+      'field types' => array('commerce_quickbooks_product_income_account'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_field_widget_form().
+ *
+ * hook_widget_form() is where Drupal tells us to create form elements for
+ * our field's widget.
+ *
+ * We provide one of three different forms, depending on the widget type of
+ * the Form API item provided.
+ *
+ * The 'commerce_quickbooks_colorpicker' and 'commerce_quickbooks_text' are essentially
+ * the same, but commerce_quickbooks_colorpicker adds a javascript colorpicker
+ * helper.
+ *
+ * commerce_quickbooks_3text displays three text fields, one each for red, green,
+ * and blue. However, the field type defines a single text column,
+ * rgb, which needs an HTML color spec. Define an element validate
+ * handler that converts our r, g, and b fields into a simulated single
+ * 'rgb' form element.
+ */
+function commerce_quickbooks_field_widget_form(&$form, &$form_state, $field, $instance, $langcode, $items, $delta, $element) {
+  $value = isset($items[$delta]['product_income_account']) ? $items[$delta]['product_income_account'] : '';
+
+  $widget = $element;
+  $widget['#delta'] = $delta;
+
+  switch ($instance['widget']['type']) {
+
+    case 'commerce_quickbooks_account_select':
+      $accounts = commerce_quickbooks_fetch_accounts();
+      $widget += array(
+        '#type' => 'select',
+        '#default_value' => $value,
+        '#options' => $accounts,
+        '#multiple' => FALSE,
+      );
+      break;
+
+  }
+
+  $element['product_income_account'] = $widget;
+  return $element;
+}
+
+
+/**
+ * Implements hook_field_widget_error().
+ *
+ * hook_field_widget_error() lets us figure out what to do with errors
+ * we might have generated in hook_field_validate(). Generally, we'll just
+ * call form_error().
+ *
+ * @see commerce_quickbooks_field_validate()
+ * @see form_error()
+ */
+function commerce_quickbooks_field_widget_error($element, $error, $form, &$form_state) {
+  /*
+  switch ($error['error']) {
+    case 'commerce_quickbooks_invalid':
+      form_error($element, $error['message']);
+      break;
+  } */
+}
+
+function commerce_quickbooks_fetch_accounts (){
+  $qbo = new QBO();
+  $accounts = $qbo->query("SELECT Id, Name, AccountType, Classification FROM Account");
+  $qbo_accounts = array();
+  foreach ($accounts as $account) {
+    $account_id = $account->Id;
+    $account_name = $account->Name;
+    $qbo_accounts[$account_id] = $account_name;
+  }
+  return $qbo_accounts;
+}
+
+function commerce_quickbooks_fetch_account ($name){
+  $qbo = new QBO();
+  $accounts = $qbo->query("SELECT Id, Name, AccountType, Classification FROM Account WHERE Name = '" . $name . "'");
+  foreach ($accounts as $account) {
+    $account_id = $account->Id;
+    $account_name = $account->Name;
+  }
+  $account = array(
+    'id' => $account_id,
+    'name' => $account_name
+  );
+  return $account;
+}
+
+/*
+ * This simply puts the selected order statuses into a string. Intended for looking up the orders to sync
+ */
+function commerce_quickbooks_get_statuses () {
+    $valid_statuses = variable_get('commerce_quickbooks_order_status');
+    $valid_statuses_string = implode(',', $valid_statuses);
+    return $valid_statuses_string;
+}
+
